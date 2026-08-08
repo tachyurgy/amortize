@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Amortize — committed cloud spend, spread and attributed</title>
+<style>
+  :root{--bg:#fbfbfc;--ink:#131619;--muted:#606974;--line:#e4e7ea;--card:#fff;
+        --accent:#2a5f7a;--ok:#1c6b4d;--bad:#a13a26;--warn:#9a6b1f;
+        --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;}
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#0f1215;--ink:#eef1f4;--muted:#95a0ab;--line:#232a30;--card:#161a1e;
+          --accent:#6fb2cf;--ok:#79c9a4;--bad:#e2907b;--warn:#d9ac5e;}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:38px 20px 80px}
+  header{border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:22px}
+  h1{font-size:27px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--muted);margin:0}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
+     font-family:var(--mono);margin:28px 0 10px}
+  .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-family:var(--mono);
+         font-size:11.5px;border:1px solid var(--ok);color:var(--ok)}
+  .badge.bad{border-color:var(--bad);color:var(--bad)}
+  .cards{display:flex;gap:12px;flex-wrap:wrap}
+  .card{flex:1 1 220px;background:var(--card);border:1px solid var(--line);
+        border-radius:9px;padding:13px 15px}
+  .card h3{margin:0 0 4px;font-size:14px}
+  .big{font-size:23px;font-family:var(--mono);letter-spacing:-.02em}
+  .kv{display:flex;justify-content:space-between;font-family:var(--mono);
+      font-size:12.5px;padding:2px 0;color:var(--muted)}
+  .kv b{color:var(--ink)}
+  .chart{display:flex;align-items:flex-end;gap:3px;height:130px;padding:10px;
+         background:var(--card);border:1px solid var(--line);border-radius:9px}
+  .bar{flex:1;background:var(--accent);border-radius:2px 2px 0 0;min-height:1px;position:relative}
+  .bar span{position:absolute;bottom:-19px;left:50%;transform:translateX(-50%);
+            font-family:var(--mono);font-size:9.5px;color:var(--muted)}
+  .chartwrap{margin-bottom:26px}
+  table{border-collapse:collapse;width:100%;min-width:600px}
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:9px;background:var(--card)}
+  th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:14px}
+  th{font-family:var(--mono);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;
+     color:var(--muted);font-weight:600}
+  td.num,th.num{text-align:right;font-family:var(--mono);font-size:13px}
+  .low{color:var(--bad);font-weight:600}
+  .note{color:var(--muted);font-size:13.5px;margin:8px 0 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Amortize</h1>
+  <p class="sub">Upfront commitments spread across the days they cover and attributed to the accounts that consumed them, without losing a micro-unit.</p>
+</header>
+
+<div id="recon"></div>
+
+<h2>What the invoice says</h2>
+<div class="chartwrap"><div class="chart" id="unblended"></div></div>
+<p class="note">Three commitments, all bought in January. Useful for paying the bill, useless for running a budget.</p>
+
+<h2>Amortised</h2>
+<div class="chartwrap"><div class="chart" id="amortized"></div></div>
+<p class="note">Same total to the micro-unit, spread across the term.</p>
+
+<h2>By commitment</h2>
+<div class="tablewrap"><table id="commitments"></table></div>
+<p class="note">Unused commitment stays with the payer rather than being redistributed onto consumers.
+  Redistributing it would make coverage look perfect and waste read as zero, which is the number a FinOps team is actually hunting.</p>
+
+<h2>By account</h2>
+<div class="cards" id="accounts"></div>
+</div>
+
+<script>
+const $ = i => document.getElementById(i);
+const D = m => "$" + (m / 1_000_000).toLocaleString("en-US", {maximumFractionDigits: 0});
+const D2 = m => "$" + (m / 1_000_000).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+function chart(el, monthly){
+  const vals = Object.values(monthly);
+  const max = Math.max(...vals, 1);
+  el.innerHTML = Object.entries(monthly).map(([k, v]) =>
+    '<div class="bar" style="height:' + Math.max(1, (v / max) * 100) + '%" title="' + k + ': ' + D(v) + '">' +
+    '<span>' + k.slice(5) + '</span></div>').join('');
+}
+
+async function load(){
+  const [r, u] = await Promise.all([
+    (await fetch('/api/report')).json(),
+    (await fetch('/api/unblended')).json(),
+  ]);
+
+  const rec = r.reconciliation;
+  $('recon').innerHTML =
+    '<div class="cards">' +
+    '<div class="card"><h3>Purchased</h3><div class="big">' + D(rec.purchased_micros) + '</div>' +
+      '<div class="kv"><span>micro-units</span><b>' + rec.purchased_micros.toLocaleString() + '</b></div></div>' +
+    '<div class="card"><h3>Attributed</h3><div class="big">' + D(rec.attributed_micros) + '</div>' +
+      '<div class="kv"><span>difference</span><b>' + rec.difference_micros + '</b></div></div>' +
+    '<div class="card"><h3>Unused</h3><div class="big">' + D(rec.unused_micros) + '</div>' +
+      '<div class="kv"><span>coverage</span><b>' + (rec.coverage * 100).toFixed(2) + '%</b></div></div>' +
+    '<div class="card"><h3>Reconciliation</h3><div style="margin-top:8px">' +
+      (rec.balanced ? '<span class="badge">balanced to the micro-unit</span>'
+                    : '<span class="badge bad">off by ' + rec.difference_micros + '</span>') +
+      '</div></div></div>';
+
+  chart($('unblended'), u.monthly);
+  chart($('amortized'), r.monthly);
+
+  $('commitments').innerHTML =
+    '<tr><th>commitment</th><th>family</th><th class="num">days</th><th class="num">upfront</th>' +
+    '<th class="num">attributed</th><th class="num">unused</th><th class="num">coverage</th></tr>' +
+    r.by_commitment.map(c =>
+      '<tr><td>' + c.id + '</td><td>' + c.family + '</td>' +
+      '<td class="num">' + c.days + '</td>' +
+      '<td class="num">' + D2(c.upfront_micros) + '</td>' +
+      '<td class="num">' + D2(c.attributed_micros) + (c.balanced ? '' : ' ⚠') + '</td>' +
+      '<td class="num">' + D2(c.unused_micros) + '</td>' +
+      '<td class="num' + (c.coverage < 0.7 ? ' low' : '') + '">' + (c.coverage * 100).toFixed(1) + '%</td></tr>'
+    ).join('');
+
+  $('accounts').innerHTML = Object.entries(r.by_account).sort((a,b) => b[1]-a[1]).map(([a, v]) =>
+    '<div class="card"><h3>' + a + '</h3><div class="big">' + D(v) + '</div>' +
+    '<div class="kv"><span>share</span><b>' +
+    ((v / rec.attributed_micros) * 100).toFixed(1) + '%</b></div></div>').join('');
+}
+load();
+</script>
+</body>
+</html>
